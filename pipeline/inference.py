@@ -638,6 +638,96 @@ def build_adapter(config: dict) -> ModelAdapter:
 # Inference stage orchestration
 # ---------------------------------------------------------------------
 
+RAG_PROMPT_FIELD = "_rag_prompt"
+LANGUAGE_MODEL_ADAPTERS = ("ollama", "openai_compatible")
+
+
+def is_language_model(adapter_config: dict) -> bool:
+    adapter_type = adapter_config.get("type")
+    if adapter_type in LANGUAGE_MODEL_ADAPTERS:
+        return True
+    return adapter_type == "huggingface" and adapter_config.get("mode") == "text_generation"
+
+
+def prepare_model_inputs(
+    records: list[dict],
+    retriever: Any,
+    query_field: str | None,
+) -> tuple[list[dict], dict[int, dict], dict[int, str]]:
+    """Attach retrieved context to each record when retrieval is enabled.
+
+    Returns (model_inputs, retrieval_by_index, errors_by_index). A record whose
+    context cannot be built is never sent to the model; it is reported as failed.
+    """
+    if retriever is None:
+        return records, {}, {}
+
+    model_inputs: list[dict] = []
+    retrieval: dict[int, dict] = {}
+    errors: dict[int, str] = {}
+    for index, record in enumerate(records):
+        try:
+            outcome = retriever.build_prompt(str(get_field(record, query_field)))
+        except Exception as exc:
+            model_inputs.append(record)
+            errors[index] = str(exc)
+            continue
+
+        retrieval[index] = outcome["retrieval"]
+        if outcome["error"]:
+            model_inputs.append(record)
+            errors[index] = outcome["error"]
+        else:
+            model_inputs.append({**record, RAG_PROMPT_FIELD: outcome["prompt"]})
+    return model_inputs, retrieval, errors
+
+
+def run_agent_stage(
+    agent_config: dict,
+    records: list[dict],
+    run_id: str,
+    output_prefix: str,
+    llm_config: dict,
+    retriever: Any,
+) -> dict:
+    """Run multi-agent analysis. Failures are recorded; prediction results are not changed."""
+    import agents
+
+    findings_path = f"{output_prefix}/agent_findings.json"
+    trace_path = f"{output_prefix}/agent_trace.jsonl"
+    try:
+        model_config = agent_config.get("model") or llm_config
+        if not is_language_model(model_config):
+            raise ValueError("Agents require a language-model adapter.")
+        result = agents.run_agents(
+            agent_config,
+            records,
+            build_model_adapter=lambda cfg: build_adapter(
+                {**cfg, "text_field": agents.AGENT_PROMPT_FIELD}
+            ),
+            default_model_config=llm_config,
+            retriever=retriever,
+        )
+    except Exception as exc:
+        result = {
+            "stage": "agents",
+            "status": "failed",
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+            "counts": {},
+            "trace": [],
+        }
+
+    trace = result.pop("trace", [])
+    write_json_uri(findings_path, {**result, "run_id": run_id})
+    write_jsonl_uri(trace_path, trace)
+    return {
+        "status": result["status"],
+        "counts": result.get("counts", {}),
+        "artifacts": {"agent_findings": findings_path, "agent_trace": trace_path},
+    }
+
+
 def run_inference(args: argparse.Namespace) -> int:
     run_id = args.run_id or str(uuid.uuid4())
     started_at = utc_now()
@@ -671,6 +761,23 @@ def run_inference(args: argparse.Namespace) -> int:
 
         config = load_config(args.config)
         adapter_config = config.get("adapter", config)
+        llm_config = adapter_config
+
+        retrieval_config = config.get("retrieval")
+        retriever = None
+        query_field = None
+        if retrieval_config:
+            if not is_language_model(adapter_config):
+                raise ValueError(
+                    "retrieval requires a language-model adapter: ollama, "
+                    "openai_compatible, or huggingface with mode text_generation."
+                )
+            import rag
+
+            query_field = retrieval_config.get("query_field") or adapter_config.get("text_field", "text")
+            retriever = rag.Retriever(retrieval_config)
+            adapter_config = {**adapter_config, "text_field": RAG_PROMPT_FIELD}
+
         adapter = build_adapter(adapter_config)
 
         batch_size = int(config.get("batch_size", 16))
@@ -681,79 +788,91 @@ def run_inference(args: argparse.Namespace) -> int:
         include_input = bool(config.get("include_input_record", True))
         continue_on_error = bool(config.get("continue_on_error", True))
         id_field = config.get("id_field")
-        predictions = []
+        predictions: list[dict] = []
+        model_inputs, retrieval, prep_errors = prepare_model_inputs(
+            records, retriever, query_field
+        )
+        adapter_info = {
+            "adapter_type": adapter_config.get("type"),
+            "model_name": adapter_config.get("model_name")
+                or adapter_config.get("model_path"),
+        }
+
+        def result_for(index: int, output: Any = None, error: str | None = None) -> dict:
+            record = records[index]
+            result = dict(record) if include_input else {}
+            meta = {
+                "run_id": run_id,
+                "record_id": make_record_id(record, index, id_field),
+                **adapter_info,
+                "completed_at": utc_now(),
+            }
+            if index in retrieval:
+                meta["retrieval"] = retrieval[index]
+            if error is None:
+                result[prediction_field] = json_safe(output)
+                meta["status"] = "succeeded"
+            else:
+                meta["status"] = "failed"
+                meta["error"] = error
+            result["_inference"] = meta
+            return result
+
+        def record_success(index: int, output: Any) -> None:
+            predictions.append(result_for(index, output=output))
+            report["counts"]["succeeded"] += 1
+
+        def record_failure(index: int, error: str) -> None:
+            result = result_for(index, error=error)
+            predictions.append(result)
+            report["counts"]["failed"] += 1
+            report["errors"].append({
+                "record_id": result["_inference"]["record_id"],
+                "error": error,
+            })
 
         for start in range(0, len(records), batch_size):
-            batch = records[start:start + batch_size]
+            indices = list(range(start, min(start + batch_size, len(records))))
+            for index in indices:
+                if index in prep_errors:
+                    record_failure(index, prep_errors[index])
+
+            runnable = [i for i in indices if i not in prep_errors]
+            if not runnable:
+                continue
+
             try:
-                batch_outputs = adapter.predict_batch(batch)
-                if len(batch_outputs) != len(batch):
+                batch_outputs = adapter.predict_batch([model_inputs[i] for i in runnable])
+                if len(batch_outputs) != len(runnable):
                     raise ValueError(
                         f"Adapter returned {len(batch_outputs)} predictions "
-                        f"for {len(batch)} records."
+                        f"for {len(runnable)} records."
                     )
+                for index, output in zip(runnable, batch_outputs):
+                    record_success(index, output)
 
-                for offset, (record, output) in enumerate(
-                    zip(batch, batch_outputs)
-                ):
-                    index = start + offset
-                    result = dict(record) if include_input else {}
-                    record_id = make_record_id(record, index, id_field)
-                    result[prediction_field] = json_safe(output)
-                    result["_inference"] = {
-                        "run_id": run_id,
-                        "record_id": record_id,
-                        "status": "succeeded",
-                        "adapter_type": adapter_config.get("type"),
-                        "model_name": adapter_config.get("model_name")
-                            or adapter_config.get("model_path"),
-                        "completed_at": utc_now(),
-                    }
-                    predictions.append(result)
-                    report["counts"]["succeeded"] += 1
-
-            except Exception as exc:
+            except Exception:
                 if not continue_on_error:
                     raise
 
                 # A failed batch is retried record-by-record to isolate failures.
-                for offset, record in enumerate(batch):
-                    index = start + offset
+                for index in runnable:
                     try:
-                        one_output = adapter.predict_batch([record])
+                        one_output = adapter.predict_batch([model_inputs[index]])
                         if len(one_output) != 1:
                             raise ValueError(
                                 "Adapter did not return exactly one result."
                             )
-                        output = one_output[0]
-                        result = dict(record) if include_input else {}
-                        result[prediction_field] = json_safe(output)
-                        result["_inference"] = {
-                            "run_id": run_id,
-                            "record_id": make_record_id(record, index, id_field),
-                            "status": "succeeded",
-                            "adapter_type": adapter_config.get("type"),
-                            "completed_at": utc_now(),
-                        }
-                        predictions.append(result)
-                        report["counts"]["succeeded"] += 1
+                        record_success(index, one_output[0])
                     except Exception as record_exc:
-                        result = dict(record) if include_input else {}
-                        result["_inference"] = {
-                            "run_id": run_id,
-                            "record_id": make_record_id(record, index, id_field),
-                            "status": "failed",
-                            "error": str(record_exc),
-                            "completed_at": utc_now(),
-                        }
-                        predictions.append(result)
-                        report["counts"]["failed"] += 1
-                        report["errors"].append({
-                            "record_id": result["_inference"]["record_id"],
-                            "error": str(record_exc),
-                        })
+                        record_failure(index, str(record_exc))
 
         write_jsonl_uri(output_records_path, predictions)
+
+        if config.get("agents"):
+            report["agents"] = run_agent_stage(
+                config["agents"], records, run_id, output_prefix, llm_config, retriever,
+            )
 
         report["finished_at"] = utc_now()
         report["duration_seconds"] = round(time.time() - started, 3)
@@ -780,8 +899,18 @@ def run_inference(args: argparse.Namespace) -> int:
             "artifacts": {
                 "predictions": output_records_path,
                 "report": output_report_path,
+                **report.get("agents", {}).get("artifacts", {}),
             },
             "counts": report["counts"],
+            "retrieval": {
+                "enabled": retriever is not None,
+                "index_version": retriever.index_version if retriever else None,
+                "vector_table": retrieval_config.get("vector_table") if retrieval_config else None,
+            },
+            "agents": {
+                key: value for key, value in report.get("agents", {}).items()
+                if key != "artifacts"
+            } or None,
             "next_stage": config.get("next_stage"),
         }
         write_json_uri(output_manifest_path, manifest)

@@ -12,7 +12,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from conftest import find_value, labeled_rows, pending, run_anomaly, run_metrics, run_train, workflow_condition_for, workflow_jobs
+from conftest import (
+    FakeOllamaServer,
+    find_value,
+    labeled_rows,
+    ollama_config,
+    pending,
+    run_anomaly,
+    run_inference_stage,
+    run_metrics,
+    run_train,
+    workflow_condition_for,
+    workflow_jobs,
+)
 
 
 def read_json(path):
@@ -112,3 +124,42 @@ def test_11_3_c_metrics_without_labels_document_what_was_not_computed(tmp_path, 
 def test_11_3_d_dashboard_renders_when_an_optional_stage_is_skipped():
     """QRD 11.3.d: skipping an optional stage still lets dashboard generation succeed and shows the gap accurately."""
     raise NotImplementedError
+
+
+def test_11_3_e_index_is_required_only_when_retrieval_is_configured(tmp_path):
+    """QRD 11.3.e: inference runs with no index when no retrieval block is set; with one and no index, it fails."""
+    with FakeOllamaServer(["answer"]) as server:
+        code, _ = run_inference_stage(tmp_path, ollama_config(server), [{"id": "q1", "text": "hi"}], "no_index")
+    assert code == 0
+
+    with FakeOllamaServer() as server:
+        config = ollama_config(server, retrieval={
+            "vector_table": "my-project.my_dataset.chunk_vectors",
+            "index_manifest": str(tmp_path / "never_built" / "index_manifest.json"),
+            "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+        })
+        code, out = run_inference_stage(tmp_path, config, [{"id": "q1", "text": "hi"}], "missing_index")
+    assert code == 1
+    assert not (out / "predictions.jsonl").exists()
+
+
+def test_11_3_f_agent_artifacts_exist_only_when_agents_are_configured(tmp_path):
+    """QRD 11.3.f: without an agents block there are no agent artifacts; with one, the findings and trace are written."""
+    with FakeOllamaServer(["answer"]) as server:
+        code, out = run_inference_stage(tmp_path, ollama_config(server), [{"id": "q1", "text": "hi"}], "no_agents")
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert manifest.get("agents") is None
+    assert not (out / "agent_findings.json").exists()
+
+    with FakeOllamaServer(["answer", '{"next": "FINISH", "summary": "ok"}']) as server:
+        config = ollama_config(server, agents={
+            "objective": "Summarize.",
+            "specialists": [{"name": "quality", "instructions": "Read.", "tools": ["read_artifact"]}],
+        })
+        code, out = run_inference_stage(tmp_path, config, [{"id": "q1", "text": "hi"}], "with_agents")
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert (out / "agent_findings.json").exists()
+    assert (out / "agent_trace.jsonl").exists()
+    assert manifest["artifacts"]["agent_findings"].endswith("agent_findings.json")

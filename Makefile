@@ -200,7 +200,7 @@ run-workflow:
 run-sampling:
 	gcloud run jobs execute $(JOB_SAMPLING) \
 		--region=$(REGION) --project=$(PROJECT_ID) --wait \
-		--args=sample.py,--input,$(SOURCE_URI),--output-prefix,$(STAGE_1_URI)
+		--args=sample.py,--source,$(SOURCE_URI),--output-prefix,$(STAGE_1_URI)
 
 run-preprocessing:
 	gcloud run jobs execute $(JOB_PREPROCESSING) \

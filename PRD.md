@@ -1,5 +1,5 @@
 Product Requirements Document: Modular AI Intelligence Framework
-Version 1.0 · High-level product requirements
+Version 1.1 · High-level product requirements
 
 1. Data Ingestion
 1.1. The system shall allow users to import datasets from common data sources and file formats.
@@ -39,6 +39,10 @@ Version 1.0 · High-level product requirements
 3.6. The system shall allow users to configure relevant model settings without requiring changes to the core framework.
 
 3.7. The system shall record model configurations and execution results to support reproducibility.
+
+3.8. The system shall support retrieval-augmented generation, in which relevant content from user-selected sources, such as BigQuery tables and GCS documents, is retrieved and supplied as context to a language model so that its outputs are grounded in the user's data.
+
+3.9. The system shall support multi-agent analysis, in which several specialized agents, each limited to a defined set of permitted tools, work together on multiple analysis tasks using context drawn from a dataset, such as summarizing data quality, explaining anomalies, and drafting recommendations.
 
 4. Automated Labeling and Pseudo-Label Generation
 4.1. The system shall support datasets with existing ground-truth labels and datasets without labels.
@@ -104,6 +108,8 @@ Version 1.0 · High-level product requirements
 
 7.8. The system shall communicate errors, warnings, and limitations in a manner understandable to nontechnical users.
 
+7.9. The dashboard shall display retrieved sources and language-model or agent outputs, labeled as model-generated text and linked to the context they cite.
+
 8. Workflow Configuration and Modularity
 8.1. The system shall allow users to configure workflows without modifying the core framework.
 
@@ -140,3 +146,5 @@ Version 1.0 · High-level product requirements
 10.5. The system shall protect user data and provide appropriate controls over access to datasets and results.
 
 10.6. The system shall distinguish correlation, statistical deviation, and model predictions from verified causal explanations or confirmed real-world events.
+
+10.7. The system shall label language-model and agent outputs as generated text and shall not present them as verified findings. Agents shall act only through the tools they are permitted to use and shall not alter source data or the outputs of other stages.

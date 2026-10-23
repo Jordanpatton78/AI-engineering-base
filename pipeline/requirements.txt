@@ -17,6 +17,10 @@ accelerate>=1.0,<2
 
 # Google Cloud Storage
 google-cloud-storage>=2.18,<4
+google-cloud-bigquery>=3.25,<4
+
+# LangChain multi-agent analysis (agents.py)
+langchain-core>=0.3,<2
 
 # Dashboard and visualization
 streamlit>=1.40,<2

@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
 
-from conftest import ROOT, STAGE_1, pending
+from conftest import ROOT, STAGE_1, pending, requires_bigquery
 
 
 def read_jsonl(path: Path):
@@ -158,10 +159,19 @@ def test_invalid_output_argument_combination_is_rejected(tmp_path, run_cli):
     assert "Specify exactly one" in result.stderr
 
 
-@pending("BigQuery import is not implemented; stage 1 reads local files only")
-def test_1_1_a_bigquery_table_import_reads_expected_records():
+@requires_bigquery
+def test_1_1_a_bigquery_table_import_reads_expected_records(tmp_path, run_cli):
     """QRD 1.1.a (BigQuery part): import a known BigQuery table and verify the expected records and fields are read."""
-    raise NotImplementedError
+    table = os.environ["RAG_TEST_TABLE"]
+    output = tmp_path / "out"
+
+    result = run_cli(STAGE_1, "--source", f"bq://{table}", "--output-dir", output)
+
+    assert result.returncode == 0, result.stderr
+    records = read_jsonl(output / "canonical.jsonl")
+    assert records and "_ingestion" in records[0]
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["source"]["format"] == "bigquery"
 
 
 def test_1_2_b_unregistered_data_type_is_identified_as_incompatible(tmp_path, run_cli):
@@ -177,10 +187,26 @@ def test_1_2_b_unregistered_data_type_is_identified_as_incompatible(tmp_path, ru
     assert not (output / "canonical.jsonl").exists()
 
 
-@pending("Stage 1 accepts no schema, identifier, or task configuration file yet")
-def test_1_3_b_invalid_ingestion_configuration_is_rejected_before_processing():
-    """QRD 1.3.b: a configuration missing required fields or with invalid settings fails validation before processing."""
-    raise NotImplementedError
+def test_1_3_b_invalid_ingestion_configuration_is_rejected_before_processing(tmp_path, run_cli):
+    """QRD 1.3.b: invalid settings fail validation before any output is written."""
+    source = tmp_path / "input.csv"
+    source.write_text("id,name\n1,Ada\n", encoding="utf-8")
+
+    bad_identifier = tmp_path / "bad_id.json"
+    bad_identifier.write_text(json.dumps({"id_field": "customer_id"}), encoding="utf-8")
+    output = tmp_path / "out_id"
+    result = run_cli(STAGE_1, "--source", source, "--output-dir", output, "--config", bad_identifier)
+    assert result.returncode == 1
+    assert "missing id_field" in result.stderr
+    assert not (output / "canonical.jsonl").exists()
+
+    unknown_key = tmp_path / "unknown.json"
+    unknown_key.write_text(json.dumps({"tasks": "classification"}), encoding="utf-8")
+    output = tmp_path / "out_key"
+    result = run_cli(STAGE_1, "--source", source, "--output-dir", output, "--config", unknown_key)
+    assert result.returncode == 1
+    assert "Unknown configuration key" in result.stderr
+    assert not (output / "canonical.jsonl").exists()
 
 
 @pending("BigQuery connector is not implemented, so BigQuery vs GCS equivalence cannot be checked")

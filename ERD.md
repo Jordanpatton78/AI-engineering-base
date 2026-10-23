@@ -1,5 +1,5 @@
 Engineering Requirements Document (ERD)
-Modular AI Intelligence Framework · GCP · Version 1.1
+Modular AI Intelligence Framework · GCP · Version 1.2
 
 1. Data Ingestion
 1.1. Import datasets from common data sources and file formats.
@@ -75,6 +75,40 @@ Model parameters, thresholds, training options, and inference settings shall be 
 3.7. Record model configurations and execution results.
 
 Every model execution shall record the model identifier and version, configuration, preprocessing version, input artifact references, code version, and execution outcome. Training and inference manifests shall reference these records.
+
+3.8. Retrieval-augmented generation (RAG) for language models.
+
+Retrieval is an optional step that runs before a language-model adapter generates output, in the inference stage and for agents. It is configured by a retrieval block and is disabled by default. Retrieval applies only to language-model adapters; a retrieval block on any other adapter shall fail validation under 3.5.
+
+Sources. The retrieval block shall list the sources to index: BigQuery tables, read through an explicit column list, and GCS prefixes containing .txt, .md, .html, .pdf, or .jsonl objects. Each BigQuery row becomes one document built from its configured text fields and keeps its record identifier. GCS objects are parsed with the existing text, pypdf, and BeautifulSoup dependencies. Unsupported or unparseable objects shall be listed as skipped in the index manifest, not dropped silently.
+
+Chunking. Documents are split into chunks of a configured token length (default 256) with a configured overlap (default 32). A chunk ID is derived from source URI, record identifier or byte range, chunk position, and a content hash, so re-indexing unchanged content produces the same IDs.
+
+Embeddings. Chunks and queries are embedded with the same BERT-family encoder, configured as a model reference: a sentence-embedding model loaded with Hugging Face transformers, or a Vertex AI endpoint. Embeddings are the mean-pooled last hidden state, L2-normalized. The index manifest records the model reference, model version, and output dimension. A query whose encoder version or dimension differs from the index shall be refused.
+
+Vector store. The index build is an optional part of the data preparation stage (Stage 2 in 11.1). It writes one row per chunk to a BigQuery table that serves as the vector database, with columns chunk_id, run_id, source_uri, record_id, chunk_text, chunk_position, embedding (`ARRAY<FLOAT64>`), embedding_model, and indexed_at. Large tables shall also receive a BigQuery vector index. A JSONL copy of the chunks and the index manifest are written to GCS under the run prefix, so the index can be rebuilt or audited without BigQuery.
+
+Retrieval. The query text is embedded with the same encoder. The stage retrieves the top k chunks (default 5) by cosine distance using BigQuery VECTOR_SEARCH, optionally filtered by source or run identifier, and discards chunks below a configured minimum similarity. Exact (brute-force) search is used when no vector index exists. Each retrieval records the query hash, k, similarity scores, chunk IDs, and index version.
+
+Context assembly. Retrieved chunks are inserted into a versioned prompt template in descending score order until the configured context token budget is reached. Each inserted chunk carries its chunk ID so the model can cite it. Chunks dropped for budget are counted in the manifest. If no chunk passes the similarity threshold, the record follows the configured policy: when require_context is true (the default), it is marked failed and is not sent to the model; when false, the model answers the question alone and a warning is recorded. Context shall never be fabricated.
+
+Access. Retrieval reads only the sources named in its block. The service account needs read access to those sources and write access to the index dataset only.
+
+3.9. Multi-agent analysis with LangChain.
+
+Multi-agent analysis lets a configured set of agents perform several analysis tasks over one dataset context in a single run. It is implemented with langchain-core: the chat-model wrapper, messages, prompt templates, and tools. The supervisor and specialist loops are plain Python in agents.py, so LangGraph is not required. Each agent's chat model wraps a language-model adapter from the registry in 3.4, so any registered language-model adapter can serve an agent.
+
+Roles. A supervisor agent receives the objective and a summary of the run manifest, breaks the objective into subtasks, and routes each subtask to a specialist agent. Specialists are declared in configuration with a name, instruction reference, model reference, tool allowlist, and execution limits. Example specialists for an industry profile are a data-quality reviewer, an anomaly explainer, a metrics reviewer, and a report writer.
+
+Tools. Tools are registered Python functions with typed input schemas. The initial set is read-only: bigquery_select (SELECT statements only, restricted to allowed datasets and row-limited), read_run_artifact (reads manifests and reports under the run prefix), retrieve_context (3.8), and describe_table (descriptive statistics). No tool writes to source datasets. The only write is the agent findings artifact.
+
+Limits. Each agent has a maximum step count, a maximum tool-call count, and a wall-clock timeout. Reaching a limit stops that agent with status limit_reached and keeps its partial trace.
+
+Trace. Every model reply and tool call (name, argument hash, result summary) shall be appended to a JSONL agent trace. The stage writes the trace next to its findings, and the inference manifest references both. Model output is not guaranteed to replay exactly, so the trace is the audit record.
+
+Findings. Agents write a findings artifact in which each finding carries its text, a provenance of model_generated, and the artifacts and chunk IDs it cites. Citations that do not match a tool result are listed as unverified. No confidence value is recorded, because the model adapters do not report one consistently. Recommendations follow 9.5 and are marked as recommendations.
+
+Execution. Agents run inside the inference stage (Stage 6 in 11.1), after predictions are written and only when an agents block is configured. A failure is recorded in the manifest and does not alter the predictions. New specialists and tools are added through the extension interfaces in 8.4 and selected by configuration.
 
 4. Automated Labeling and Pseudo-Label Generation
 4.1. Support labeled and unlabeled datasets.
@@ -272,15 +306,15 @@ GCP IAM shall restrict access to source datasets, model artifacts, and reports u
 The framework shall label model predictions, anomaly scores, correlations, and generated explanations according to their actual evidentiary status. Any causal claim or confirmed domain-specific conclusion shall require appropriate validation beyond a statistical deviation or model output.
 
 11. Pipeline Execution and Artifact Contract
-This section defines how the numbered requirements above are assembled into the requested eight-stage GCP workflow. It supplements the PRD traceability sections rather than introducing additional product requirements.
+This section defines how the numbered requirements above are assembled into the requested eight-stage GCP workflow. Two stages have optional components: the vector index in Stage 2 and agent analysis in Stage 6. It supplements the PRD traceability sections rather than introducing additional product requirements.
 11.1. Required execution order
-Order	Cloud Run Job	Required output
+Order	Stage	Required output
 1	Sample data	Sampled dataset and sampling manifest
-2	Data preparation / feature extraction	Prepared data, feature schema, transformations
-3	Pseudo-labeling	Generated labels and provenance, or explicit skip result
-4	Anomaly / OOD detection	Scores, flags, distribution analysis, or skip result
-5	Model training	Model artifact or selected existing-model reference, plus training metadata or skip result
-6	Inference	Predictions and inference metadata
+2	Data preparation / feature extraction (optional vector index)	Prepared data, feature schema, transformations; vector table, chunk JSONL, and index manifest when enabled
+3	Pseudo-labeling (conditional)	Generated labels and provenance, or explicit skip result
+4	Anomaly / OOD detection (conditional)	Scores, flags, distribution analysis, or skip result
+5	Model training (conditional)	Model artifact or selected existing-model reference, plus training metadata or skip result
+6	Inference (retrieval-augmented and agent analysis when configured)	Predictions, inference metadata, retrieval records, and agent findings and trace when enabled
 7	Metrics	Evaluation report and structured metrics
 8	Dashboard generation	Dashboard summary, visualization outputs, and references to supporting artifacts
 
@@ -297,7 +331,9 @@ The next stage shall not begin until the preceding stage has returned a valid co
 11.3. Important execution rules
 - Stage 3: Pseudo-labeling is conditional on the availability and suitability of labels and the workflow configuration.
 - Stage 4: Anomaly/OOD detection is conditional on the availability of a compatible method and any required reference data.
+- Stage 2: The vector index build runs only when a retrieval block is configured. Otherwise it records a skip. The index manifest records the embedding model version and output dimension.
 - Stage 5: Training is conditional. When disabled, the workflow shall select a compatible existing primary model instead.
+- Stage 6: Inference that requires retrieval shall not send records to the model when the index is failed or skipped; those records are marked failed (3.8). Agent analysis runs only when an agents block is configured. Its failure does not alter the predictions.
 - Stage 7: Metrics shall be computed only when their prerequisites are satisfied. The stage shall still produce a report explaining unavailable metrics.
 - Stage 8: Dashboard generation shall use all available stage artifacts, including explicit skipped-stage and failure information.
 Acceptance criterion: A successful run must leave a traceable artifact or explicit skip record for every stage, with each completed stage's outputs persisted before the workflow advances. This is the central engineering contract that makes the framework reproducible and modular across different datasets and industries.

@@ -1,5 +1,5 @@
 Quality Requirements Document (QRD)
-Modular AI Intelligence Framework · GCP Implementation · Version 1.0
+Modular AI Intelligence Framework · GCP Implementation · Version 1.1
 1. Data Ingestion
 1.1. Import datasets from common data sources and file formats
 - Test 1.1.a — Supported source import: Import a known BigQuery table and supported GCS files (CSV, JSONL, Parquet). Verify that the expected records and fields are read correctly.
@@ -56,6 +56,28 @@ Modular AI Intelligence Framework · GCP Implementation · Version 1.0
 3.7. Record model configurations and execution results
 - Test 3.7.a — Model metadata completeness: Verify that each model run records the model version, preprocessing version, configuration, input artifact references, code version, and execution status.
 - Test 3.7.b — Reproducibility: Repeat a run using identical data, configuration, and model versions. Verify that outputs match within the defined tolerance for deterministic or stochastic execution.
+3.8. Retrieval-augmented generation
+- Test 3.8.a — Relevant retrieval: Index a corpus containing known passages and query with a passage's content. Verify that the expected chunk appears in the top-k results.
+- Test 3.8.b — BigQuery vector store build: Build an index from a BigQuery table with known rows. Verify that every eligible row produces chunks with embeddings of the configured dimension and that the index records the embedding model version.
+- Test 3.8.c — GCS document ingestion: Index text, Markdown, HTML, PDF, and JSONL objects from a GCS prefix, including one unsupported object. Verify that supported objects are parsed, chunked, and embedded, and that the unsupported object is listed as skipped in the index manifest.
+- Test 3.8.d — Embedding model consistency: Query an index with a different encoder version or embedding dimension. Verify that retrieval is refused with a compatibility error.
+- Test 3.8.e — Context budget: Retrieve more chunks than the configured context token budget allows. Verify that the prompt stays within budget, chunks are dropped in score order, and the number dropped is recorded.
+- Test 3.8.f — Citation provenance: Verify that each chunk supplied to the model carries its chunk ID, source URI, and record identifier, and that these appear in the inference manifest.
+- Test 3.8.g — Missing context policy: Run retrieval against an empty index with require_context set to true, then to false. Verify that the first case marks the affected record failed without contacting the model, and the second answers the question alone with a recorded warning and no fabricated context.
+- Test 3.8.h — Retrieval disabled: Run inference with no retrieval block. Verify that its outputs match a baseline run and that no retrieval record is written.
+- Test 3.8.i — Retrieval determinism: Repeat a retrieval with the same index, query, and k. Verify that the same chunk IDs are returned in the same order.
+- Test 3.8.j — Source restriction: Configure retrieval over one permitted table and attempt a query against an unlisted table or prefix. Verify that access is refused and no content from the unlisted source is returned.
+- Test 3.8.k — Non-language-model adapter: Attach a retrieval block to a classification adapter. Verify that the compatibility check rejects the configuration before execution.
+3.9. Multi-agent analysis with LangChain
+- Test 3.9.a — Supervisor routing: Give a supervisor agent an objective that requires data-quality and anomaly work. Verify that it delegates to the configured specialist agents and that each subtask is recorded with its assigned agent.
+- Test 3.9.b — Tool allowlist: Have a specialist call a tool outside its allowlist. Verify that the call is refused, the refusal is recorded, and the agent stops or continues according to policy.
+- Test 3.9.c — Read-only tools: Have an agent request a write, or a non-SELECT statement against BigQuery or a write to GCS. Verify that the request is rejected and source data is unchanged.
+- Test 3.9.d — Execution limits: Configure a low step limit and a task that would otherwise loop. Verify that the agent stops with status limit_reached and that its partial trace is saved.
+- Test 3.9.e — Trace completeness: Run a multi-agent analysis. Verify that every model reply, tool call with argument hash, and tool result summary appears in the agent trace, and that the inference manifest references the trace.
+- Test 3.9.f — Findings provenance: Verify that each agent finding is labeled model_generated, lists the artifacts or chunk IDs it cites, and that every cited reference exists.
+- Test 3.9.g — Model endpoint unavailable: Point the agent stage at an unreachable model endpoint. Verify that the stage fails or skips with a recorded reason and produces no findings.
+- Test 3.9.h — Extension by configuration: Register a new specialist agent and tool through the extension interface and configuration. Verify that the new agent runs without changes to the supervisor code.
+- Test 3.9.i — Failure isolation: Force the agent stage to fail. Verify that the outputs of earlier stages are unchanged and that the dashboard displays the failure.
 4. Automated Labeling and Pseudo-Label Generation
 4.1. Support labeled and unlabeled datasets
 - Test 4.1.a — Label-state detection: Test fully labeled, partially labeled, and unlabeled datasets. Verify that each is assigned the correct label state and follows the configured workflow.
@@ -150,6 +172,9 @@ Modular AI Intelligence Framework · GCP Implementation · Version 1.0
 7.8. Communicate errors, warnings, and limitations to nontechnical users
 - Test 7.8.a — Error explanation: Trigger representative ingestion, model, and evaluation failures. Verify that the dashboard provides understandable descriptions of each failure.
 - Test 7.8.b — Technical detail separation: Verify that user-facing explanations remain concise while technical details remain available in authorized logs.
+7.9. Display retrieved sources and generated text
+- Test 7.9.a — Generated-text labeling: Display an inference output and an agent finding. Verify that each is labeled as model-generated and shows the sources it cites.
+- Test 7.9.b — Source drill-down: Select a citation in a displayed output. Verify that the referenced chunk and its source URI or record identifier are shown.
 8. Workflow Configuration and Modularity
 8.1. Configure workflows without modifying the core framework
 - Test 8.1.a — Configuration-driven execution: Change the dataset, model, and task through configuration. Verify that the workflow executes the intended changes without modifications to orchestration code.
@@ -208,6 +233,9 @@ Modular AI Intelligence Framework · GCP Implementation · Version 1.0
 10.6. Distinguish statistical findings from verified explanations or events
 - Test 10.6.a — Unsupported causal claims: Provide correlated but noncausal features and verify that the system does not present them as proven causes.
 - Test 10.6.b — Event classification: Provide an anomaly without independent evidence of fraud, a defect, or a security incident. Verify that the output remains a potential finding rather than a confirmed event.
+10.7. Label generated language and agent output
+- Test 10.7.a — Unsupported generated claims: Ask a language model a question whose answer is absent from the retrieved context. Verify that the output is flagged as not supported by the context or as uncertain, and is not presented as a sourced fact.
+- Test 10.7.b — Agent action boundaries: Verify that agents act only through tools in their allowlists and that no agent output alters a manifest or artifact written by another stage.
 11. Pipeline Execution and Artifact Contract
 11.1. Execute stages in the required order
 - Test 11.1.a — Sequential execution: Run a complete workflow and verify that the eight Cloud Run Jobs execute in the specified order, with each stage starting only after the preceding stage completes successfully or returns an explicitly permitted skip status.
@@ -222,6 +250,8 @@ Modular AI Intelligence Framework · GCP Implementation · Version 1.0
 - Test 11.3.b — Training condition: Test training-enabled and inference-only configurations. Verify that training executes only when required and that inference uses the correct trained or existing model.
 - Test 11.3.c — Metrics condition: Test datasets with valid ground-truth labels, pseudo-labels only, and no labels. Verify that the metrics stage calculates only valid metrics and documents unavailable ones.
 - Test 11.3.d — Dashboard resilience: Skip an optional stage and verify that dashboard generation succeeds while accurately representing missing outputs.
+- Test 11.3.e — Index requirement: Run inference with and without a retrieval block, with no index built. Verify that inference runs without an index when no retrieval block is set, and that a configured retrieval with no index fails the stage without writing predictions.
+- Test 11.3.f — Agent stage condition: Run inference with and without an agents block. Verify that agent findings and trace artifacts exist only when the block is configured, and that the dashboard renders in both cases.
 12. Recommended Implementation Decisions
 12.1. Use one Cloud Run Job per stage initially
 - Test 12.1.a — Stage isolation: Execute each stage independently using its declared inputs and configuration. Verify that it completes without relying on in-memory state from another job.
@@ -241,3 +271,6 @@ Modular AI Intelligence Framework · GCP Implementation · Version 1.0
 - Test 12.5.a — Detection distinction: Use a dataset containing an unusual record that remains within the primary model's expected input distribution. Verify that data-level anomaly detection and model-level OOD detection are recorded as separate results.
 - Test 12.5.b — Independent execution: Configure data-level anomaly detection without a model-specific OOD detector. Verify that the supported anomaly analysis can run independently.
 - Test 12.5.c — Result interpretation: Verify that the dashboard distinguishes data anomalies, distribution shifts, and model-level OOD findings rather than merging them into a single unqualified status.
+12.6. Use BigQuery as the vector store and LangChain for agent orchestration
+- Test 12.6.a — Vector store routing: Build an index and run retrieval. Verify that chunk vectors are stored in BigQuery, that the chunk JSONL and index manifest are in GCS, and that retrieval does not depend on a local index file.
+- Test 12.6.b — Framework isolation: Verify that LangChain is imported only by the agent and retrieval modules, so that the orchestration logic and the non-agent stages run without it installed.

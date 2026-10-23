@@ -7,8 +7,13 @@ routing, and the common artifact schema are pending.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 
-from conftest import ANOMALY, INFERENCE, pending, workflow_condition_for, workflow_jobs, write_jsonl
+import pytest
+
+from conftest import ANOMALY, INFERENCE, ROOT, pending, requires_bigquery, workflow_condition_for, workflow_jobs, write_jsonl
 
 
 ANOMALY_ROWS = [{"id": i, "x": (i % 6) * 0.1, "y": (i // 6) * 0.1} for i in range(30)] + [{"id": 30, "x": 100.0, "y": 100.0}]
@@ -128,3 +133,44 @@ def test_12_5_b_data_anomaly_detection_runs_without_an_ood_detector(tmp_path, ru
 def test_12_5_c_dashboard_separates_data_anomalies_shifts_and_model_ood_findings():
     """QRD 12.5.c: the dashboard shows data anomalies, distribution shifts, and model-level OOD findings separately."""
     raise NotImplementedError
+
+
+@requires_bigquery
+def test_12_6_a_chunk_vectors_in_bigquery_and_index_files_in_gcs(tmp_path):
+    """QRD 12.6.a (live): chunk vectors land in the BigQuery table and the chunk JSONL and manifest are in GCS."""
+    import rag
+
+    prefix = os.environ.get("RAG_TEST_PREFIX", "")
+    if not prefix.startswith("gs://"):
+        pytest.skip("Set RAG_TEST_PREFIX=gs://bucket/path to run the GCS half of this test")
+    table = os.environ["RAG_TEST_TABLE"] + "_vectors"
+    config = {
+        "sources": [{"type": "gcs", "prefix": prefix.rstrip("/") + "/corpus/", "text_fields": ["text"]}],
+        "embedding_model": os.environ.get("RAG_TEST_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
+        "vector_table": table,
+    }
+    manifest = rag.build_index(config, "routing-run", prefix.rstrip("/") + "/stage_2")
+
+    assert manifest["vector_table"] == table
+    assert manifest["artifacts"]["index_manifest"].startswith("gs://")
+    assert rag.read_text(manifest["artifacts"]["index_manifest"])
+
+
+def test_12_6_b_non_agent_stages_import_without_langchain():
+    """QRD 12.6.b: with LangChain unavailable, inference and retrieval still import; only the agent module fails."""
+    script = (
+        "import sys\n"
+        "sys.modules['langchain_core'] = None\n"
+        "import inference, rag\n"
+        "try:\n"
+        "    import agents\n"
+        "except ImportError:\n"
+        "    print('agents-blocked')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=str(ROOT / "pipeline"),
+        capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "agents-blocked" in result.stdout

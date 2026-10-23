@@ -105,3 +105,15 @@ def test_7_8_a_ingestion_model_and_evaluation_failures_have_plain_explanations()
 def test_7_8_b_user_messages_are_concise_and_technical_detail_is_kept_in_logs():
     """QRD 7.8.b: user-facing explanations stay concise while technical details remain in authorized logs."""
     raise NotImplementedError
+
+
+@pending(HARNESS)
+def test_7_9_a_generated_text_is_labeled_and_shows_its_cited_sources():
+    """QRD 7.9.a: an inference output and an agent finding are each labeled model-generated and show the sources they cite."""
+    raise NotImplementedError
+
+
+@pending(HARNESS)
+def test_7_9_b_selected_citation_shows_its_chunk_and_source():
+    """QRD 7.9.b: selecting a citation shows the referenced chunk and its source URI or record identifier."""
+    raise NotImplementedError

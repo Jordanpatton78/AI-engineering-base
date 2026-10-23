@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -11,6 +12,8 @@ from typing import Any
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+# Lets tests import the stage helpers (rag, inference, agents) directly.
+sys.path.insert(0, str(ROOT / "pipeline"))
 STAGE_1 = ROOT / "pipeline/sample.py"
 PREPROCESS = ROOT / "pipeline/preprocess.py"
 TRAIN = ROOT / "pipeline/train.py"
@@ -51,6 +54,78 @@ def labeled_rows(n: int = 40) -> list[dict]:
 def regression_rows(n: int = 40) -> list[dict]:
     """Small regression dataset where y is a linear function of x."""
     return [{"id": i, "x": float(i), "y": 2.0 * i + 1.0} for i in range(n)]
+
+
+class FakeOllamaServer:
+    """Local stand-in for Ollama's /api/chat. Replies are popped in order; every request is kept."""
+
+    def __init__(self, replies: list[str] | None = None):
+        self.replies = list(replies or [])
+        self.requests: list[dict] = []
+        self._server = None
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self._server.server_address[1]}"
+
+    def __enter__(self) -> "FakeOllamaServer":
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                owner.requests.append(body)
+                content = owner.replies.pop(0) if owner.replies else "{}"
+                payload = json.dumps({"model": body.get("model"), "message": {"role": "assistant", "content": content}, "done": True}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        self._server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+requires_bigquery = pytest.mark.skipif(
+    not os.environ.get("RAG_TEST_TABLE"),
+    reason="Set RAG_TEST_TABLE=project.dataset.table to run against live BigQuery",
+)
+
+
+def ollama_config(server: FakeOllamaServer, **extra) -> dict:
+    """Inference config that sends every record to the fake Ollama server."""
+    config = {"adapter": {"type": "ollama", "model_name": "fake", "base_url": server.url, "text_field": "text"}}
+    config.update(extra)
+    return config
+
+
+def run_inference_stage(tmp_path: Path, config: dict, records: list[dict], name: str = "run") -> tuple[int, Path]:
+    """Run inference.run_inference in-process. Returns (exit code, output directory)."""
+    import argparse
+
+    import inference
+
+    input_path = write_jsonl(tmp_path / f"{name}_input.jsonl", records)
+    config_path = tmp_path / f"{name}_config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    out = tmp_path / name
+    code = inference.run_inference(argparse.Namespace(
+        input=str(input_path), input_manifest=None, config=str(config_path),
+        output_prefix=str(out), run_id=f"{name}-id",
+    ))
+    return code, out
 
 
 def find_value(node: Any, key: str) -> Any:

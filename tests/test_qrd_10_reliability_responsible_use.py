@@ -9,7 +9,21 @@ from __future__ import annotations
 import json
 import re
 
-from conftest import ROOT, TRAIN, find_value, labeled_rows, pending, run_anomaly, run_train, write_jsonl
+import rag
+from conftest import (
+    ROOT,
+    TRAIN,
+    FakeOllamaServer,
+    find_value,
+    labeled_rows,
+    ollama_config,
+    pending,
+    read_jsonl,
+    run_anomaly,
+    run_inference_stage,
+    run_train,
+    write_jsonl,
+)
 
 
 def read_json(path):
@@ -130,3 +144,37 @@ def test_10_6_b_anomaly_without_evidence_is_not_reported_as_a_confirmed_event(tm
     text = json.dumps(read_json(out / "anomaly_report.json")).lower()
     assert "confirmed" not in text
     assert "security incident" not in text
+
+
+def test_10_7_a_prompt_requires_grounding_and_admits_missing_answers():
+    """QRD 10.7.a (prompt level): the prompt tells the model to use only the context and to say when the answer is absent."""
+    prompt = rag.render_prompt("What is the churn rate?", [{"chunk_id": "c1", "chunk_text": "revenue grew"}])
+
+    assert "using only the context" in prompt
+    assert "say so" in prompt
+    assert "[c1] revenue grew" in prompt
+
+
+@pending("Whether a live model stays within retrieved context needs a labeled evaluation set and a model endpoint")
+def test_10_7_a_model_answers_stay_within_retrieved_context():
+    """QRD 10.7.a (behavior): on questions with no supporting context, answers are flagged as unsupported or uncertain."""
+    raise NotImplementedError
+
+
+def test_10_7_b_agent_run_writes_only_its_own_artifacts_and_leaves_predictions_unchanged(tmp_path):
+    """QRD 10.7.b: agents write only their findings and trace; the prediction output is unchanged by the agent stage."""
+    with FakeOllamaServer(["prediction answer", '{"next": "FINISH", "summary": "Nothing to flag."}']) as server:
+        config = ollama_config(server, agents={
+            "objective": "Summarize.",
+            "specialists": [{"name": "quality", "instructions": "Read.", "tools": ["read_artifact"]}],
+        })
+        code, out = run_inference_stage(tmp_path, config, [{"id": "q1", "text": "question"}])
+
+    assert code == 0
+    predictions = read_jsonl(out / "predictions.jsonl")
+    assert predictions[0]["prediction"]["text"] == "prediction answer"
+    written = {path.name for path in out.iterdir()}
+    assert written == {
+        "predictions.jsonl", "inference_report.json", "manifest.json",
+        "agent_findings.json", "agent_trace.jsonl",
+    }
