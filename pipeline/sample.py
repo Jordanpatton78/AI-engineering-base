@@ -71,6 +71,17 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from common import (
+    utc_now,
+    sha256,
+    join_path,
+    write_bytes,
+    read_source,
+    decode_text,
+    parse_json_records,
+    parse_jsonl_records,
+)
+
 
 STRUCTURED_EXTENSIONS = {".csv", ".json", ".jsonl", ".ndjson", ".parquet"}
 TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".html", ".htm"}
@@ -79,106 +90,6 @@ SUPPORTED_EXTENSIONS = STRUCTURED_EXTENSIONS | TEXT_EXTENSIONS | PDF_EXTENSIONS
 SUPPORTED_SCHEMA_TYPES = {"string", "number", "integer", "boolean", "object", "array"}
 CONFIG_KEYS = {"dataset_name", "id_field", "columns", "task", "schema", "encoding"}
 BQ_TABLE_PATTERN = re.compile(r"^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+){2}$")
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def is_gcs_uri(value: str) -> bool:
-    return value.startswith("gs://")
-
-
-def split_gcs_uri(uri: str) -> tuple[str, str]:
-    parsed = urlparse(uri)
-    if parsed.scheme != "gs" or not parsed.netloc or not parsed.path.lstrip("/"):
-        raise ValueError(f"Invalid GCS URI: {uri!r}. Expected gs://bucket/object")
-    return parsed.netloc, parsed.path.lstrip("/")
-
-
-def get_gcs_client():
-    try:
-        from google.cloud import storage  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError(
-            "GCS support requires google-cloud-storage. "
-            "Install it with: pip install google-cloud-storage"
-        ) from exc
-    return storage.Client()
-
-
-def read_source(source: str) -> tuple[bytes, str]:
-    """Return source bytes and a stable source identifier."""
-    if is_gcs_uri(source):
-        bucket_name, blob_name = split_gcs_uri(source)
-        blob = get_gcs_client().bucket(bucket_name).blob(blob_name)
-        if not blob.exists():
-            raise FileNotFoundError(f"GCS object does not exist: {source}")
-        return blob.download_as_bytes(), source
-
-    path = Path(source).expanduser().resolve()
-    if not path.is_file():
-        raise FileNotFoundError(f"Source file does not exist: {path}")
-    return path.read_bytes(), str(path)
-
-
-def upload_bytes(uri: str, data: bytes, content_type: str | None = None) -> None:
-    bucket_name, blob_name = split_gcs_uri(uri)
-    blob = get_gcs_client().bucket(bucket_name).blob(blob_name)
-    blob.upload_from_string(data, content_type=content_type)
-
-
-def save_bytes(destination: str, data: bytes, content_type: str | None = None) -> str:
-    if is_gcs_uri(destination):
-        upload_bytes(destination, data, content_type)
-        return destination
-
-    path = Path(destination).expanduser().resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    return str(path)
-
-
-def join_location(root: str, name: str) -> str:
-    return f"{root.rstrip('/')}/{name}"
-
-
-def decode_text(raw: bytes, encoding: str) -> str:
-    try:
-        return raw.decode(encoding)
-    except UnicodeDecodeError as exc:
-        raise ValueError(
-            f"Could not decode input using encoding {encoding!r}. "
-            "Set \"encoding\" in the configuration to the correct encoding."
-        ) from exc
-
-
-def parse_json_records(text: str) -> list[Any]:
-    payload = json.loads(text)
-    if isinstance(payload, list):
-        return payload
-    if isinstance(payload, dict):
-        # A single JSON object is one record; nested arrays are not guessed at.
-        return [payload]
-    return [{"value": payload}]
-
-
-def parse_jsonl_records(text: str) -> list[Any]:
-    records: list[Any] = []
-    for line_number, line in enumerate(text.splitlines(), start=1):
-        if not line.strip():
-            continue
-        try:
-            records.append(json.loads(line))
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"Invalid JSON on line {line_number}: {exc.msg}"
-            ) from exc
-    return records
 
 
 # ---------------------------------------------------------------------
@@ -343,7 +254,7 @@ def run(args: argparse.Namespace) -> int:
         source_kind_note = None
 
     validate_records(records, config, kind)
-    source_sha = sha256_bytes(raw)
+    source_sha = sha256(raw)
 
     canonical_lines = []
     for index, record in enumerate(records, start=1):
@@ -360,20 +271,20 @@ def run(args: argparse.Namespace) -> int:
         }
         canonical_lines.append(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
 
-    raw_root = args.raw_prefix.rstrip("/") if args.raw_prefix else join_location(output_root, "raw")
-    raw_location = save_bytes(join_location(raw_root, name), raw)
+    raw_root = args.raw_prefix.rstrip("/") if args.raw_prefix else join_path(output_root, "raw")
+    raw_location = write_bytes(join_path(raw_root, name), raw)
 
     # Confirm the source was not changed while it was being read and copied.
     if not args.source.startswith("bq://"):
-        after_sha = sha256_bytes(read_source(args.source)[0])
+        after_sha = sha256(read_source(args.source)[0])
         if after_sha != source_sha:
             raise RuntimeError("The source changed while it was being ingested; no manifest was written.")
 
-    canonical_location = save_bytes(join_location(output_root, "canonical.jsonl"),
+    canonical_location = write_bytes(join_path(output_root, "canonical.jsonl"),
                                     "".join(canonical_lines).encode("utf-8"),
                                     "application/x-ndjson")
 
-    manifest_location = join_location(output_root, "manifest.json")
+    manifest_location = join_path(output_root, "manifest.json")
     manifest = {
         "stage": "stage_1_ingestion",
         "run_id": run_id,
@@ -410,7 +321,7 @@ def run(args: argparse.Namespace) -> int:
         },
         "errors": [],
     }
-    save_bytes(manifest_location, json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8"),
+    write_bytes(manifest_location, json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8"),
                "application/json")
 
     print(json.dumps({

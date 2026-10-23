@@ -53,6 +53,10 @@ from langchain_core.tools import BaseTool, tool
 
 import rag
 
+from common import (
+    utc_now,
+)
+
 
 AGENT_PROMPT_FIELD = "_agent_prompt"
 SUPPORTED_TOOLS = ("bigquery_select", "read_artifact", "retrieve_context")
@@ -61,10 +65,6 @@ WRITE_OR_DDL_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 TABLE_REFERENCE = re.compile(r"\b(?:from|join)\s+`?([A-Za-z0-9_.-]+)`?", re.IGNORECASE)
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------

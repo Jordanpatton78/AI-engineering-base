@@ -1,0 +1,8 @@
+{
+  "task": "classification",
+  "target_field": "churned",
+  "prediction_field": "prediction",
+  "prediction_value_path": "prediction",
+  "positive_label": "yes",
+  "labels": ["no", "yes"]
+}

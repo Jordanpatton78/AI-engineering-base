@@ -21,133 +21,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from common import (
+    utc_now,
+    read_text,
+    json_safe,
+    get_field,
+    read_json,
+    read_jsonl,
+    write_json,
+    write_jsonl,
+)
+
 
 # ---------------------------------------------------------------------
 # Shared utilities
 # ---------------------------------------------------------------------
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def json_safe(value: Any) -> Any:
-    """Convert common model outputs into JSON-serializable values."""
-    if hasattr(value, "tolist"):
-        return json_safe(value.tolist())
-    if hasattr(value, "item"):
-        return json_safe(value.item())
-    if isinstance(value, dict):
-        return {str(k): json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [json_safe(v) for v in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
-
-
-def read_json(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def read_jsonl(path: str) -> list[dict]:
-    records = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line_number, line in enumerate(f, 1):
-            if not line.strip():
-                continue
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"Invalid JSON on line {line_number}: {exc}"
-                ) from exc
-            if not isinstance(item, dict):
-                raise ValueError(
-                    f"Line {line_number} must contain a JSON object."
-                )
-            records.append(item)
-    return records
-
-
-def write_json(path: str, data: dict) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(json_safe(data), f, indent=2, ensure_ascii=False)
-
-
-def write_jsonl(path: str, records: list[dict]) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        for record in records:
-            f.write(json.dumps(
-                json_safe(record), ensure_ascii=False
-            ) + "\n")
-
-
-def read_text_uri(uri: str) -> str:
-    """Read local files or gs:// URIs."""
-    if uri.startswith("gs://"):
-        from google.cloud import storage
-
-        bucket_name, _, blob_name = uri[5:].partition("/")
-        if not bucket_name or not blob_name:
-            raise ValueError(f"Invalid GCS URI: {uri}")
-        return storage.Client().bucket(
-            bucket_name
-        ).blob(blob_name).download_as_text(encoding="utf-8")
-
-    return Path(uri).read_text(encoding="utf-8")
-
-
-def read_jsonl_uri(uri: str) -> list[dict]:
-    return [
-        json.loads(line)
-        for line in read_text_uri(uri).splitlines()
-        if line.strip()
-    ]
-
-
-def write_uri(uri: str, content: str) -> None:
-    if uri.startswith("gs://"):
-        from google.cloud import storage
-
-        bucket_name, _, blob_name = uri[5:].partition("/")
-        if not bucket_name or not blob_name:
-            raise ValueError(f"Invalid GCS URI: {uri}")
-        storage.Client().bucket(
-            bucket_name
-        ).blob(blob_name).upload_from_string(
-            content, content_type="text/plain; charset=utf-8"
-        )
-    else:
-        path = Path(uri)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-
-
-def write_json_uri(uri: str, data: dict) -> None:
-    write_uri(uri, json.dumps(json_safe(data), indent=2, ensure_ascii=False))
-
-
-def write_jsonl_uri(uri: str, records: list[dict]) -> None:
-    content = "".join(
-        json.dumps(json_safe(r), ensure_ascii=False) + "\n"
-        for r in records
-    )
-    write_uri(uri, content)
-
 
 def load_config(path: str | None) -> dict:
     return read_json(path) if path else {}
-
-
-def get_field(record: dict, field: str) -> Any:
-    """Read nested fields using dot notation, e.g. customer.text."""
-    value: Any = record
-    for part in field.split("."):
-        if not isinstance(value, dict) or part not in value:
-            raise KeyError(f"Missing required field: {field}")
-        value = value[part]
-    return value
 
 
 def make_record_id(record: dict, index: int, id_field: str | None) -> str:
@@ -167,7 +59,7 @@ def validate_input_manifest(uri: str | None) -> dict | None:
     if not uri:
         return None
 
-    manifest = json.loads(read_text_uri(uri))
+    manifest = json.loads(read_text(uri))
     if manifest.get("status") != "succeeded":
         raise ValueError(
             f"Input manifest status must be 'succeeded'; "
@@ -719,8 +611,8 @@ def run_agent_stage(
         }
 
     trace = result.pop("trace", [])
-    write_json_uri(findings_path, {**result, "run_id": run_id})
-    write_jsonl_uri(trace_path, trace)
+    write_json(findings_path, {**result, "run_id": run_id})
+    write_jsonl(trace_path, trace)
     return {
         "status": result["status"],
         "counts": result.get("counts", {}),
@@ -756,7 +648,7 @@ def run_inference(args: argparse.Namespace) -> int:
     adapter = None
     try:
         input_manifest = validate_input_manifest(args.input_manifest)
-        records = read_jsonl_uri(args.input)
+        records = read_jsonl(args.input)
         report["counts"]["input_records"] = len(records)
 
         config = load_config(args.config)
@@ -867,7 +759,7 @@ def run_inference(args: argparse.Namespace) -> int:
                     except Exception as record_exc:
                         record_failure(index, str(record_exc))
 
-        write_jsonl_uri(output_records_path, predictions)
+        write_jsonl(output_records_path, predictions)
 
         if config.get("agents"):
             report["agents"] = run_agent_stage(
@@ -883,7 +775,7 @@ def run_inference(args: argparse.Namespace) -> int:
         )
         report["output_uri"] = output_records_path
         report["input_manifest"] = input_manifest
-        write_json_uri(output_report_path, report)
+        write_json(output_report_path, report)
 
         manifest = {
             "stage": "inference",
@@ -913,7 +805,7 @@ def run_inference(args: argparse.Namespace) -> int:
             } or None,
             "next_stage": config.get("next_stage"),
         }
-        write_json_uri(output_manifest_path, manifest)
+        write_json(output_manifest_path, manifest)
 
         print(json.dumps({
             "status": report["status"],
@@ -935,8 +827,8 @@ def run_inference(args: argparse.Namespace) -> int:
             "traceback": traceback.format_exc(),
         })
         try:
-            write_json_uri(output_report_path, report)
-            write_json_uri(output_manifest_path, {
+            write_json(output_report_path, report)
+            write_json(output_manifest_path, {
                 "stage": "inference",
                 "run_id": run_id,
                 "status": "failed",

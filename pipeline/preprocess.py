@@ -89,7 +89,14 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
-from sample import decode_text, join_location, parse_jsonl_records, read_source, save_bytes
+from common import (
+    utc_now,
+    join_path,
+    write_bytes,
+    read_source,
+    decode_text,
+    parse_jsonl_records,
+)
 
 
 DEFAULT_MISSING_TOKENS = {"", "na", "n/a", "null", "none", "nan"}
@@ -107,10 +114,6 @@ IMPACT_TEXT = {
     "exact_duplicate_findings": "Exact duplicates over-weight records and overstate metric confidence.",
     "missing_value_findings": "Missing values reduce usable rows and can bias results when systematic.",
 }
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------
@@ -442,13 +445,13 @@ def run(args: argparse.Namespace) -> int:
     prepared, dropped, applied, counts = apply_actions(records, config, tokens)
     report = build_report(run_id, records, prepared, found, dropped, applied, counts)
 
-    prepared_location = save_bytes(join_location(output_root, "prepared.jsonl"),
+    prepared_location = write_bytes(join_path(output_root, "prepared.jsonl"),
                                    "".join(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in prepared).encode("utf-8"),
                                    "application/x-ndjson")
-    report_location = save_bytes(join_location(output_root, "quality_report.json"),
+    report_location = write_bytes(join_path(output_root, "quality_report.json"),
                                  json.dumps(report, indent=2, ensure_ascii=False, default=str).encode("utf-8"),
                                  "application/json")
-    manifest_location = join_location(output_root, "manifest.json")
+    manifest_location = join_path(output_root, "manifest.json")
     manifest = {
         "stage": "stage_2_preparation",
         "run_id": run_id,
@@ -476,7 +479,7 @@ def run(args: argparse.Namespace) -> int:
         },
         "errors": [],
     }
-    save_bytes(manifest_location, json.dumps(manifest, indent=2, ensure_ascii=False, default=str).encode("utf-8"),
+    write_bytes(manifest_location, json.dumps(manifest, indent=2, ensure_ascii=False, default=str).encode("utf-8"),
                "application/json")
 
     print(json.dumps({

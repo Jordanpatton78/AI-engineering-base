@@ -63,6 +63,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from common import (
+    utc_now,
+    split_gcs_uri,
+    read_text,
+    write_text,
+)
+
 
 RAG_PROMPT_VERSION = "rag-prompt-v1"
 SUPPORTED_GCS_SUFFIXES = (".txt", ".md", ".html", ".htm", ".pdf", ".jsonl")
@@ -86,9 +93,6 @@ class RetrievalError(Exception):
 # Shared utilities
 # ---------------------------------------------------------------------
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
 
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -96,38 +100,6 @@ def sha256_text(text: str) -> str:
 
 def approx_tokens(text: str) -> int:
     return len(text.split())
-
-
-def split_gcs_uri(uri: str) -> tuple[str, str]:
-    bucket_name, _, blob_name = uri[5:].partition("/")
-    if not bucket_name or not blob_name:
-        raise ValueError(f"Invalid GCS URI: {uri}")
-    return bucket_name, blob_name
-
-
-def read_text(uri: str) -> str:
-    """Read a local file or gs:// object as UTF-8 text."""
-    if uri.startswith("gs://"):
-        from google.cloud import storage
-
-        bucket_name, blob_name = split_gcs_uri(uri)
-        return storage.Client().bucket(bucket_name).blob(blob_name).download_as_text(encoding="utf-8")
-    return Path(uri).read_text(encoding="utf-8")
-
-
-def write_text(uri: str, content: str) -> None:
-    """Write a local file or gs:// object as UTF-8 text."""
-    if uri.startswith("gs://"):
-        from google.cloud import storage
-
-        bucket_name, blob_name = split_gcs_uri(uri)
-        storage.Client().bucket(bucket_name).blob(blob_name).upload_from_string(
-            content, content_type="text/plain; charset=utf-8"
-        )
-        return
-    path = Path(uri)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
 
 
 def validate_table(table_id: str) -> str:

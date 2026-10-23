@@ -1,0 +1,9 @@
+{
+  "expert": {
+    "type": "example_rule",
+    "field": "plan",
+    "positive_value": "basic",
+    "positive_label": "yes",
+    "negative_label": "no"
+  }
+}

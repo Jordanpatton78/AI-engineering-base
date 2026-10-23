@@ -3,17 +3,17 @@
 # Configuration
 # ============================================================
 
-PROJECT_ID ?= your-gcp-project
+PROJECT_ID ?= ai-engineering-512517
 REGION ?= us-central1
 AR_REPOSITORY ?= ml-pipeline
 IMAGE_NAME ?= ml-pipeline
 IMAGE_TAG ?= latest
 
 SERVICE_ACCOUNT ?= ml-pipeline@$(PROJECT_ID).iam.gserviceaccount.com
-ARTIFACT_BUCKET ?= your-artifact-bucket
+ARTIFACT_BUCKET ?= $(PROJECT_ID)-artifacts
 
 WORKFLOW_NAME ?= ml-pipeline
-WORKFLOW_FILE ?= workflow.yaml
+WORKFLOW_FILE ?= pipeline/workflow.yaml
 
 IMAGE_URI := $(REGION)-docker.pkg.dev/$(PROJECT_ID)/$(AR_REPOSITORY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
@@ -38,6 +38,13 @@ STAGE_7_URI = $(BASE_URI)/stage_7
 RUN_LABELING ?= false
 RUN_TRAINING ?= true
 
+# Training reads labeled data only when labeling ran, matching workflow.yaml.
+TRAIN_INPUT = $(if $(filter true,$(RUN_LABELING)),$(STAGE_4_URI)/labeled.jsonl,$(STAGE_2_URI)/prepared.jsonl)
+TRAIN_INPUT_MANIFEST = $(if $(filter true,$(RUN_LABELING)),$(STAGE_4_URI)/manifest.json,$(STAGE_2_URI)/manifest.json)
+
+# Fixed model location shared by training and inference (matches inference_config.json).
+MODEL_URI ?= gs://$(ARTIFACT_BUCKET)/models/smoke/model.joblib
+
 # ============================================================
 # Job names — must match workflow.yaml
 # ============================================================
@@ -59,7 +66,7 @@ JOBS = \
 	$(JOB_INFERENCE) \
 	$(JOB_METRICS)
 
-.PHONY: help test setup configure build push deploy-all \
+.PHONY: help test setup iam configure build push deploy-all \
 	deploy-sampling deploy-preprocessing deploy-anomaly \
 	deploy-labeling deploy-training deploy-inference deploy-metrics \
 	deploy-workflow run-workflow \
@@ -71,6 +78,7 @@ JOBS = \
 help:
 	@echo "Setup:"
 	@echo "  make setup"
+	@echo "  make iam          # grant the service account its roles"
 	@echo "  make build push deploy-all deploy-workflow"
 	@echo ""
 	@echo "Run the full pipeline:"
@@ -111,6 +119,11 @@ setup: configure
 		cloudbuild.googleapis.com \
 		storage.googleapis.com \
 		--project=$(PROJECT_ID)
+	# Workflows creates its service agent lazily; creating it here avoids
+	# FAILED_PRECONDITION ("Workflows service agent does not exist") on deploy.
+	gcloud beta services identity create \
+		--service=workflows.googleapis.com \
+		--project=$(PROJECT_ID)
 	gcloud artifacts repositories describe $(AR_REPOSITORY) \
 		--location=$(REGION) \
 		--project=$(PROJECT_ID) >/dev/null 2>&1 || \
@@ -119,12 +132,47 @@ setup: configure
 		--location=$(REGION) \
 		--project=$(PROJECT_ID)
 	@echo "Ensure the artifact bucket exists: gs://$(ARTIFACT_BUCKET)"
-	@echo "Ensure the service account exists and has the required IAM permissions."
+	@echo "Ensure the service account exists, then run: make iam"
+
+# ============================================================
+# IAM
+#
+# Grants the pipeline service account the roles its stages use. Run once per
+# project, after make setup. Project-wide roles cover BigQuery and Cloud Run;
+# narrow them to specific datasets if the project holds other data.
+# The deployer (DEPLOYER, or the active gcloud account) is granted
+# serviceAccountUser so jobs and workflows can run as the service account.
+# ============================================================
+
+PIPELINE_PROJECT_ROLES = \
+	roles/bigquery.jobUser \
+	roles/bigquery.dataEditor \
+	roles/run.developer \
+	roles/secretmanager.secretAccessor \
+	roles/logging.logWriter \
+	roles/artifactregistry.reader
+
+iam:
+	@for role in $(PIPELINE_PROJECT_ROLES); do \
+		gcloud projects add-iam-policy-binding $(PROJECT_ID) \
+			--member=serviceAccount:$(SERVICE_ACCOUNT) \
+			--role=$$role \
+			--condition=None >/dev/null || exit 1; \
+	done
+	gcloud storage buckets add-iam-policy-binding gs://$(ARTIFACT_BUCKET) \
+		--member=serviceAccount:$(SERVICE_ACCOUNT) \
+		--role=roles/storage.objectAdmin
+	@deployer=$${DEPLOYER:-$$(gcloud config get-value account 2>/dev/null)}; \
+	gcloud iam service-accounts add-iam-policy-binding $(SERVICE_ACCOUNT) \
+		--member="user:$$deployer" \
+		--role=roles/iam.serviceAccountUser \
+		--project=$(PROJECT_ID) >/dev/null
+	@echo "Granted pipeline roles to $(SERVICE_ACCOUNT)."
 
 build:
 	gcloud builds submit \
 		--tag=$(IMAGE_URI) \
-		--project=$(PROJECT_ID) .
+		--project=$(PROJECT_ID) pipeline
 
 push: build
 	@echo "Cloud Build builds and pushes the image to Artifact Registry."
@@ -184,6 +232,8 @@ deploy-workflow:
 		--project=$(PROJECT_ID) \
 		--service-account=$(SERVICE_ACCOUNT)
 
+deploy: deploy-all deploy-workflow
+
 run-workflow:
 	gcloud workflows run $(WORKFLOW_NAME) \
 		--location=$(REGION) \
@@ -220,7 +270,7 @@ run-labeling:
 run-training:
 	gcloud run jobs execute $(JOB_TRAINING) \
 		--region=$(REGION) --project=$(PROJECT_ID) --wait \
-		--args=train.py,--input,$(STAGE_4_URI)/labeled.jsonl,--input-manifest,$(STAGE_4_URI)/manifest.json,--config,$(TRAIN_CONFIG),--output-prefix,$(STAGE_5_URI)
+		--args=train.py,--input,$(TRAIN_INPUT),--input-manifest,$(TRAIN_INPUT_MANIFEST),--config,$(TRAIN_CONFIG),--output-prefix,$(STAGE_5_URI),--model-path,$(MODEL_URI)
 
 run-inference:
 	gcloud run jobs execute $(JOB_INFERENCE) \

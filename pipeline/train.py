@@ -62,112 +62,21 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+from common import (
+    sha256,
+    join_path,
+    read_bytes,
+    write_bytes,
+    read_json,
+    read_jsonl,
+    write_json,
+    write_jsonl,
+)
+
 
 # ---------------------------------------------------------------------
 # Storage helpers
 # ---------------------------------------------------------------------
-
-def read_bytes(path: str) -> bytes:
-    if path.startswith("gs://"):
-        try:
-            from google.cloud import storage
-        except ImportError as exc:
-            raise RuntimeError(
-                "Install google-cloud-storage to read GCS paths."
-            ) from exc
-
-        bucket, key = path[5:].split("/", 1)
-        return storage.Client().bucket(bucket).blob(key).download_as_bytes()
-
-    return Path(path).read_bytes()
-
-
-def write_bytes(path: str, content: bytes) -> None:
-    if path.startswith("gs://"):
-        try:
-            from google.cloud import storage
-        except ImportError as exc:
-            raise RuntimeError(
-                "Install google-cloud-storage to write GCS paths."
-            ) from exc
-
-        bucket, key = path[5:].split("/", 1)
-        storage.Client().bucket(bucket).blob(key).upload_from_string(content)
-        return
-
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(content)
-
-
-def join_path(prefix: str, filename: str) -> str:
-    return f"{prefix.rstrip('/')}/{filename}"
-
-
-def write_json(path: str, value: Any) -> None:
-    content = json.dumps(
-        value,
-        indent=2,
-        ensure_ascii=False,
-        default=str,
-        allow_nan=False,
-    ) + "\n"
-
-    write_bytes(path, content.encode("utf-8"))
-
-
-def write_jsonl(path: str, records: list[dict]) -> None:
-    content = "".join(
-        json.dumps(
-            record,
-            ensure_ascii=False,
-            default=str,
-            allow_nan=False,
-        ) + "\n"
-        for record in records
-    )
-
-    write_bytes(path, content.encode("utf-8"))
-
-
-def sha256(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
-
-
-def read_json(path: str) -> dict:
-    value = json.loads(read_bytes(path).decode("utf-8"))
-
-    if not isinstance(value, dict):
-        raise ValueError(f"Expected a JSON object in {path}.")
-
-    return value
-
-
-def read_jsonl(path: str) -> list[dict]:
-    records = []
-
-    for line_number, line in enumerate(
-        read_bytes(path).decode("utf-8-sig").splitlines(),
-        start=1,
-    ):
-        if not line.strip():
-            continue
-
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"Invalid JSON on line {line_number}: {exc}"
-            ) from exc
-
-        if not isinstance(record, dict):
-            raise ValueError(
-                f"Expected an object on line {line_number}."
-            )
-
-        records.append(record)
-
-    return records
 
 
 # ---------------------------------------------------------------------

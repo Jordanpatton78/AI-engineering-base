@@ -1,0 +1,8 @@
+{
+  "type": "sklearn",
+  "model_path": "gs://ai-engineering-512517-artifacts/models/smoke/model.joblib",
+  "feature_columns": ["age", "tenure_months", "monthly_spend", "support_tickets", "plan"],
+  "prediction_field": "prediction",
+  "include_input_record": true,
+  "continue_on_error": true
+}

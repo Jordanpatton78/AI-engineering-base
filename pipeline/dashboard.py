@@ -14,6 +14,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from common import read_text
+
 
 # ---------------------------------------------------------------------
 # Page configuration
@@ -31,30 +33,16 @@ st.set_page_config(
 # Artifact loading
 # ---------------------------------------------------------------------
 
-def read_text_uri(uri: str) -> str:
-    """Read a local file or a Google Cloud Storage URI."""
-    if uri.startswith("gs://"):
-        from google.cloud import storage
-
-        bucket_name, _, blob_name = uri[5:].partition("/")
-        if not bucket_name or not blob_name:
-            raise ValueError(f"Invalid GCS URI: {uri}")
-        return storage.Client().bucket(
-            bucket_name
-        ).blob(blob_name).download_as_text(encoding="utf-8")
-
-    return Path(uri).read_text(encoding="utf-8")
-
 
 @st.cache_data(show_spinner=False)
 def load_json(uri: str) -> dict:
-    return json.loads(read_text_uri(uri))
+    return json.loads(read_text(uri))
 
 
 @st.cache_data(show_spinner=False)
 def load_jsonl(uri: str) -> list[dict]:
     records = []
-    for line_number, line in enumerate(read_text_uri(uri).splitlines(), 1):
+    for line_number, line in enumerate(read_text(uri).splitlines(), 1):
         if not line.strip():
             continue
         try:

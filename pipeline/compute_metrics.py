@@ -16,97 +16,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from common import (
+    utc_now,
+    read_text,
+    json_safe,
+    get_field,
+    read_jsonl,
+    write_json,
+)
+
 
 # ---------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def json_safe(value: Any) -> Any:
-    if hasattr(value, "tolist"):
-        return json_safe(value.tolist())
-    if hasattr(value, "item"):
-        return json_safe(value.item())
-    if isinstance(value, dict):
-        return {str(k): json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [json_safe(v) for v in value]
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
-
-
-def get_field(record: dict, field: str) -> Any:
-    """Resolve nested paths such as prediction.label."""
-    value: Any = record
-    for part in field.split("."):
-        if not isinstance(value, dict) or part not in value:
-            raise KeyError(field)
-        value = value[part]
-    return value
-
-
-def read_text_uri(uri: str) -> str:
-    if uri.startswith("gs://"):
-        from google.cloud import storage
-
-        bucket_name, _, blob_name = uri[5:].partition("/")
-        if not bucket_name or not blob_name:
-            raise ValueError(f"Invalid GCS URI: {uri}")
-        return storage.Client().bucket(
-            bucket_name
-        ).blob(blob_name).download_as_text(encoding="utf-8")
-
-    return Path(uri).read_text(encoding="utf-8")
-
-
-def write_uri(uri: str, content: str) -> None:
-    if uri.startswith("gs://"):
-        from google.cloud import storage
-
-        bucket_name, _, blob_name = uri[5:].partition("/")
-        if not bucket_name or not blob_name:
-            raise ValueError(f"Invalid GCS URI: {uri}")
-        storage.Client().bucket(bucket_name).blob(
-            blob_name
-        ).upload_from_string(
-            content, content_type="application/json; charset=utf-8"
-        )
-    else:
-        path = Path(uri)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-
-
-def write_json_uri(uri: str, data: dict) -> None:
-    write_uri(
-        uri,
-        json.dumps(json_safe(data), indent=2, ensure_ascii=False),
-    )
-
-
-def read_jsonl(uri: str) -> list[dict]:
-    records = []
-    for line_number, line in enumerate(read_text_uri(uri).splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"Invalid JSON on line {line_number}: {exc}"
-            ) from exc
-        if not isinstance(record, dict):
-            raise ValueError(
-                f"Line {line_number} must be a JSON object."
-            )
-        records.append(record)
-    return records
 
 
 def is_missing(value: Any) -> bool:
@@ -277,7 +199,7 @@ def run(args: argparse.Namespace) -> int:
     started = time.time()
     run_id = args.run_id or str(uuid.uuid4())
 
-    config = json.loads(read_text_uri(args.config))
+    config = json.loads(read_text(args.config))
     task = config.get("task", "classification").lower()
     if task not in {"classification", "regression"}:
         raise ValueError(
@@ -430,9 +352,9 @@ def run(args: argparse.Namespace) -> int:
         "counts": metrics_document["counts"],
     }
 
-    write_json_uri(metrics_uri, metrics_document)
-    write_json_uri(report_uri, report)
-    write_json_uri(manifest_uri, manifest)
+    write_json(metrics_uri, metrics_document)
+    write_json(report_uri, report)
+    write_json(manifest_uri, manifest)
 
     print(json.dumps({
         "status": status,
