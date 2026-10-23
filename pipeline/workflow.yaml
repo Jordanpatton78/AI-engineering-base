@@ -1,0 +1,193 @@
+
+main:
+  params: [input]
+  steps:
+    - initialize:
+        assign:
+          - project_id: ${input.project_id}
+          - region: ${default(map.get(input, "region"), "us-central1")}
+          - bucket: ${input.bucket}
+          - run_id: ${input.run_id}
+          - source_uri: ${input.source_uri}
+          - run_labeling: ${default(map.get(input, "run_labeling"), false)}
+          - run_training: ${default(map.get(input, "run_training"), true)}
+          - label_config: ${input.label_config}
+          - train_config: ${input.train_config}
+          - inference_config: ${input.inference_config}
+          - metrics_config: ${input.metrics_config}
+          - base_uri: ${"gs://" + input.bucket + "/runs/" + input.run_id}
+          - sampling_uri: ${base_uri + "/stage_1"}
+          - preprocessing_uri: ${base_uri + "/stage_2"}
+          - anomaly_uri: ${base_uri + "/stage_3"}
+          - labeling_uri: ${base_uri + "/stage_4"}
+          - training_uri: ${base_uri + "/stage_5"}
+          - inference_uri: ${base_uri + "/stage_6"}
+          - metrics_uri: ${base_uri + "/stage_7"}
+
+    # 1. Sampling / ingestion
+    - sampling:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_name: "ml-stage-1-ingestion"
+          job_args:
+            - "--input"
+            - ${source_uri}
+            - "--output-prefix"
+            - ${sampling_uri}
+        result: sampling_result
+
+    # 2. Preprocessing and quality validation
+    - preprocessing:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_name: "ml-stage-2-preprocess"
+          job_args:
+            - "--input"
+            - ${sampling_uri + "/canonical.jsonl"}
+            - "--input-manifest"
+            - ${sampling_uri + "/manifest.json"}
+            - "--output-dir"
+            - ${preprocessing_uri}
+        result: preprocessing_result
+
+    # 3. Anomaly detection
+    - anomaly_detection:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_name: "ml-stage-3-anomaly-detection"
+          job_args:
+            - "--input"
+            - ${preprocessing_uri + "/prepared.jsonl"}
+            - "--output-prefix"
+            - ${anomaly_uri}
+        result: anomaly_result
+
+    # 4. Optional pseudo-labeling
+    - check_labeling:
+        switch:
+          - condition: ${run_labeling}
+            next: pseudo_labeling
+        next: select_training_input
+
+    - pseudo_labeling:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_name: "ml-stage-4-labeling"
+          job_args:
+            - "--input"
+            - ${preprocessing_uri + "/prepared.jsonl"}
+            - "--input-manifest"
+            - ${preprocessing_uri + "/manifest.json"}
+            - "--config"
+            - ${label_config}
+            - "--output-prefix"
+            - ${labeling_uri}
+        result: labeling_result
+
+    - select_training_input:
+        assign:
+          - training_input: ${if(run_labeling, labeling_uri + "/labeled.jsonl", preprocessing_uri + "/prepared.jsonl")}
+          - training_manifest: ${if(run_labeling, labeling_uri + "/manifest.json", preprocessing_uri + "/manifest.json")}
+
+    # 5. Optional model training
+    - check_training:
+        switch:
+          - condition: ${run_training}
+            next: training
+        next: inference
+
+    - training:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_name: "ml-stage-5-training"
+          job_args:
+            - "--input"
+            - ${training_input}
+            - "--input-manifest"
+            - ${training_manifest}
+            - "--config"
+            - ${train_config}
+            - "--output-prefix"
+            - ${training_uri}
+        result: training_result
+
+    # 6. Inference
+    - inference:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_name: "ml-stage-6-inference"
+          job_args:
+            - "--input"
+            - ${preprocessing_uri + "/prepared.jsonl"}
+            - "--input-manifest"
+            - ${preprocessing_uri + "/manifest.json"}
+            - "--config"
+            - ${inference_config}
+            - "--output-prefix"
+            - ${inference_uri}
+        result: inference_result
+
+    # 7. Compute evaluation metrics
+    - compute_metrics:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_name: "ml-stage-7-compute-metrics"
+          job_args:
+            - "--input"
+            - ${inference_uri + "/predictions.jsonl"}
+            - "--config"
+            - ${metrics_config}
+            - "--output-prefix"
+            - ${metrics_uri}
+            - "--run-id"
+            - ${run_id}
+        result: metrics_result
+
+    - finish:
+        return:
+          run_id: ${run_id}
+          status: "succeeded"
+          artifacts:
+            sampling: ${sampling_uri}
+            preprocessing: ${preprocessing_uri}
+            anomalies: ${anomaly_uri}
+            pseudo_labels: ${labeling_uri}
+            training: ${training_uri}
+            inference: ${inference_uri}
+            metrics: ${metrics_uri}
+          results:
+            sampling: ${sampling_result}
+            preprocessing: ${preprocessing_result}
+            anomaly_detection: ${anomaly_result}
+            inference: ${inference_result}
+            metrics: ${metrics_result}
+
+run_cloud_run_job:
+  params: [project_id, region, job_name, job_args]
+  steps:
+    - execute:
+        call: googleapis.run.v2.projects.locations.jobs.run
+        args:
+          name: ${"projects/" + project_id + "/locations/" + region + "/jobs/" + job_name}
+          body:
+            overrides:
+              containerOverrides:
+                - args: ${job_args}
+              timeout: "3600s"
+        result: execution
+    - return_execution:
+        return: ${execution}

@@ -1,0 +1,23 @@
+# Data handling and file formats
+numpy>=1.26,<3
+pandas>=2.2,<3
+pyarrow>=17,<25
+pypdf>=5,<7
+beautifulsoup4>=4.12,<5
+
+# Machine learning and model persistence
+scikit-learn>=1.5,<2
+joblib>=1.4,<2
+
+# Transformer inference
+torch>=2.4,<3
+transformers>=4.45,<5
+sentencepiece>=0.2,<1
+accelerate>=1.0,<2
+
+# Google Cloud Storage
+google-cloud-storage>=2.18,<4
+
+# Dashboard and visualization
+streamlit>=1.40,<2
+plotly>=5.24,<7
