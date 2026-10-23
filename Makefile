@@ -59,7 +59,7 @@ JOBS = \
 	$(JOB_INFERENCE) \
 	$(JOB_METRICS)
 
-.PHONY: help setup configure build push deploy-all \
+.PHONY: help test setup configure build push deploy-all \
 	deploy-sampling deploy-preprocessing deploy-anomaly \
 	deploy-labeling deploy-training deploy-inference deploy-metrics \
 	deploy-workflow run-workflow \
@@ -88,6 +88,13 @@ help:
 	@echo "Dashboard:"
 	@echo "  make dashboard-local"
 	@echo "  make deploy-dashboard"
+
+# ============================================================
+# Run tests
+# ============================================================
+
+test:
+	python -m pytest tests -q
 
 # ============================================================
 # Setup and image
