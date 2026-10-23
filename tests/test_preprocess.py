@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from conftest import PREPROCESS
+from conftest import PREPROCESS, pending
 
 
 def write_jsonl(path: Path, records: list[dict]):
@@ -238,3 +238,45 @@ def test_fail_on_errors_returns_nonzero_after_writing_report(tmp_path, ingest_cs
     assert result.returncode == 2
     assert (out / "quality_report.json").exists()
     assert (out / "manifest.json").exists()
+
+
+@pending("ML data-risk checks (imbalance, constant features, high missingness, leakage) are not implemented")
+def test_2_3_a_ml_data_risks_are_flagged_when_applicable():
+    """QRD 2.3.a: class imbalance, constant features, high missingness, unexpected categories, and target leakage are flagged."""
+    raise NotImplementedError
+
+
+@pending("Domain-specific validation plugin hook is not implemented in preprocess.py")
+def test_2_3_b_domain_rule_runs_without_changing_the_shared_engine():
+    """QRD 2.3.b: a dataset-specific rule runs without modifying the shared preparation engine."""
+    raise NotImplementedError
+
+
+def test_2_5_b_removed_records_are_recorded_and_source_is_unchanged(tmp_path, ingest_csv, run_preprocess):
+    """QRD 2.5.b: applied transformations and removed records are recorded; the original data is unchanged."""
+    canonical = tmp_path / "removable.jsonl"
+    write_jsonl(canonical, [{"id": 1, "x": "a"}, {"id": 1, "x": "a"}, {"id": 2, "x": "b"}])
+    source_before = canonical.read_bytes()
+    out = tmp_path / "out"
+
+    result, _, _ = run_preprocess(
+        canonical, ingest_csv["manifest_path"], out,
+        {"actions": {"drop_exact_duplicates": True}},
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads((out / "quality_report.json").read_text(encoding="utf-8"))
+    assert report["summary"]["explicitly_dropped_exact_duplicates"] == 1
+    assert canonical.read_bytes() == source_before
+
+
+@pending("Preprocessing has no fitted-parameter or train/test partition handling yet")
+def test_2_6_c_fitted_parameters_come_from_training_data_only():
+    """QRD 2.6.c: a value appearing only in the test partition does not influence fitted preprocessing parameters."""
+    raise NotImplementedError
+
+
+@pending("Quality dashboard is not implemented; the consistency check needs the dashboard")
+def test_2_4_b_dashboard_quality_summary_matches_saved_report():
+    """QRD 2.4.b: the dashboard's quality summaries agree with the saved validation report."""
+    raise NotImplementedError

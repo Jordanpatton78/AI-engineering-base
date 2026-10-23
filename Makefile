@@ -150,7 +150,7 @@ gcloud run jobs deploy $(1) \
 endef
 
 deploy-sampling:
-	$(call DEPLOY_JOB,$(JOB_SAMPLING),stage_1_sample.py)
+	$(call DEPLOY_JOB,$(JOB_SAMPLING),sample.py)
 
 deploy-preprocessing:
 	$(call DEPLOY_JOB,$(JOB_PREPROCESSING),preprocess.py)
@@ -200,7 +200,7 @@ run-workflow:
 run-sampling:
 	gcloud run jobs execute $(JOB_SAMPLING) \
 		--region=$(REGION) --project=$(PROJECT_ID) --wait \
-		--args=stage_1_sample.py,--input,$(SOURCE_URI),--output-prefix,$(STAGE_1_URI)
+		--args=sample.py,--input,$(SOURCE_URI),--output-prefix,$(STAGE_1_URI)
 
 run-preprocessing:
 	gcloud run jobs execute $(JOB_PREPROCESSING) \

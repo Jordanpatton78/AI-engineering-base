@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT, STAGE_1
+from conftest import ROOT, STAGE_1, pending
 
 
 def read_jsonl(path: Path):
@@ -156,3 +156,54 @@ def test_invalid_output_argument_combination_is_rejected(tmp_path, run_cli):
     result = run_cli(STAGE_1, "--source", source)
     assert result.returncode != 0
     assert "Specify exactly one" in result.stderr
+
+
+@pending("BigQuery import is not implemented; stage 1 reads local files only")
+def test_1_1_a_bigquery_table_import_reads_expected_records():
+    """QRD 1.1.a (BigQuery part): import a known BigQuery table and verify the expected records and fields are read."""
+    raise NotImplementedError
+
+
+def test_1_2_b_unregistered_data_type_is_identified_as_incompatible(tmp_path, run_cli):
+    """QRD 1.2.b: an unregistered data type is reported as incompatible rather than imported."""
+    source = tmp_path / "scan.xlsx"
+    source.write_bytes(b"PK\x03\x04 not a registered type")
+    output = tmp_path / "out"
+
+    result = run_cli(STAGE_1, "--source", source, "--output-dir", output)
+
+    assert result.returncode != 0
+    assert "unsupported" in result.stderr.lower()
+    assert not (output / "canonical.jsonl").exists()
+
+
+@pending("Stage 1 accepts no schema, identifier, or task configuration file yet")
+def test_1_3_b_invalid_ingestion_configuration_is_rejected_before_processing():
+    """QRD 1.3.b: a configuration missing required fields or with invalid settings fails validation before processing."""
+    raise NotImplementedError
+
+
+@pending("BigQuery connector is not implemented, so BigQuery vs GCS equivalence cannot be checked")
+def test_1_4_a_bigquery_and_gcs_connectors_produce_equivalent_references():
+    """QRD 1.4.a: equivalent BigQuery and GCS datasets produce compatible standardized references and metadata."""
+    raise NotImplementedError
+
+
+def test_1_4_b_two_domains_share_the_same_ingestion_interface(tmp_path, run_cli):
+    """QRD 1.4.b: two datasets from different domains run through the same stage with no domain-specific arguments."""
+    retail = tmp_path / "retail.csv"
+    retail.write_text("sku,price\nA1,9.99\nB2,4.50\n", encoding="utf-8")
+    clinical = tmp_path / "clinical.csv"
+    clinical.write_text("patient_id,dose_mg\n17,12.5\n18,7.0\n", encoding="utf-8")
+
+    retail_out = tmp_path / "retail_out"
+    clinical_out = tmp_path / "clinical_out"
+    retail_result = run_cli(STAGE_1, "--source", retail, "--output-dir", retail_out)
+    clinical_result = run_cli(STAGE_1, "--source", clinical, "--output-dir", clinical_out)
+
+    assert retail_result.returncode == 0, retail_result.stderr
+    assert clinical_result.returncode == 0, clinical_result.stderr
+    retail_manifest = json.loads((retail_out / "manifest.json").read_text(encoding="utf-8"))
+    clinical_manifest = json.loads((clinical_out / "manifest.json").read_text(encoding="utf-8"))
+    assert set(retail_manifest) == set(clinical_manifest)
+    assert retail_manifest["status"] == clinical_manifest["status"] == "succeeded"
